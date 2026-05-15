@@ -42,6 +42,7 @@
 #include <linux/string.h>
 #include <linux/swiotlb.h>
 #include <linux/types.h>
+#include <tvm/tvm-sbi.h>
 #ifdef CONFIG_DMA_RESTRICTED_POOL
 #include <linux/of.h>
 #include <linux/of_fdt.h>
@@ -298,6 +299,24 @@ static void swiotlb_init_io_tlb_pool(struct io_tlb_pool *mem, phys_addr_t start,
 	return;
 }
 
+static void zion_register_io_tlb_pool(struct io_tlb_pool *mem)
+{
+	unsigned long nr_pages;
+	long ret;
+
+	if (!mem->nslabs)
+		return;
+
+	nr_pages = PAGE_ALIGN(mem->end - mem->start) >> PAGE_SHIFT;
+	ret = zion_register_shared_mem(mem->start, nr_pages);
+	if (ret)
+		pr_warn("failed to register shared SWIOTLB pool: start=%pa pages=%lu ret=%ld\n",
+			&mem->start, nr_pages, ret);
+	else
+		pr_info("registered shared SWIOTLB pool: start=%pa pages=%lu\n",
+			&mem->start, nr_pages);
+}
+
 /**
  * add_mem_pool() - add a memory pool to the allocator
  * @mem:	Software IO TLB allocator.
@@ -411,6 +430,7 @@ void __init swiotlb_init_remap(bool addressing_limit, unsigned int flags,
 	}
 
 	swiotlb_init_io_tlb_pool(mem, __pa(tlb), nslabs, false, nareas);
+	zion_register_io_tlb_pool(mem);
 	add_mem_pool(&io_tlb_default_mem, mem);
 
 	if (flags & SWIOTLB_VERBOSE)

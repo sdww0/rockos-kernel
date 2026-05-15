@@ -12,8 +12,9 @@
 #include <linux/hrtimer.h>
 #include <linux/dma-mapping.h>
 #include <linux/kmsan.h>
+#include <linux/mm.h>
 #include <linux/spinlock.h>
-#include <xen/xen.h>
+#include <tvm/tvm-sbi.h>
 
 #ifdef DEBUG
 /* For development, we want to crash whenever the ring is screwed. */
@@ -279,22 +280,11 @@ static bool virtqueue_use_indirect(const struct vring_virtqueue *vq,
 
 static bool vring_use_dma_api(const struct virtio_device *vdev)
 {
-	if (!virtio_has_dma_quirk(vdev))
-		return true;
-
-	/* Otherwise, we are left to guess. */
 	/*
-	 * In theory, it's possible to have a buggy QEMU-supposed
-	 * emulated Q35 IOMMU and Xen enabled at the same time.  On
-	 * such a configuration, virtio has never worked and will
-	 * not work without an even larger kludge.  Instead, enable
-	 * the DMA API if we're a Xen guest, which at least allows
-	 * all of the sensible Xen configurations to work correctly.
+	 * Zion CVMs expose virtio buffers through shared SWIOTLB bounce pages.
+	 * Bypassing the DMA API would put private guest PFNs in the vring.
 	 */
-	if (xen_domain())
-		return true;
-
-	return false;
+	return true;
 }
 
 size_t virtio_max_dma_size(const struct virtio_device *vdev)
@@ -340,6 +330,30 @@ static void *vring_alloc_queue(struct virtio_device *vdev, size_t size,
 		}
 		return queue;
 	}
+}
+
+static int zion_register_vring_shared(struct virtio_device *vdev,
+				      dma_addr_t dma_addr, size_t size)
+{
+	unsigned long start, nr_pages;
+	long ret;
+
+	if (!size)
+		return 0;
+
+	start = (unsigned long)dma_addr & PAGE_MASK;
+	nr_pages = PAGE_ALIGN(((unsigned long)dma_addr & ~PAGE_MASK) + size) >>
+		   PAGE_SHIFT;
+
+	ret = zion_register_shared_mem(start, nr_pages);
+	if (ret) {
+		dev_warn(&vdev->dev,
+			 "failed to register shared virtqueue: dma=%pad size=%zu ret=%ld\n",
+			 &dma_addr, size, ret);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static void vring_free_queue(struct virtio_device *vdev, size_t size,
@@ -1126,6 +1140,13 @@ static int vring_alloc_queue_split(struct vring_virtqueue_split *vring_split,
 	}
 	if (!queue)
 		return -ENOMEM;
+
+	if (zion_register_vring_shared(vdev, dma_addr,
+				       vring_size(num, vring_align))) {
+		vring_free_queue(vdev, vring_size(num, vring_align), queue,
+				 dma_addr, dma_dev);
+		return -EIO;
+	}
 
 	vring_init(&vring_split->vring, num, queue, vring_align);
 
@@ -1978,6 +1999,14 @@ static int vring_alloc_queue_packed(struct vring_virtqueue_packed *vring_packed,
 	vring_packed->device_event_dma_addr = device_event_dma_addr;
 
 	vring_packed->vring.num = num;
+
+	if (zion_register_vring_shared(vdev, ring_dma_addr,
+				       ring_size_in_bytes) ||
+	    zion_register_vring_shared(vdev, driver_event_dma_addr,
+				       event_size_in_bytes) ||
+	    zion_register_vring_shared(vdev, device_event_dma_addr,
+				       event_size_in_bytes))
+		goto err;
 
 	return 0;
 
