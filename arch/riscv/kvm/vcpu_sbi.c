@@ -11,6 +11,7 @@
 #include <linux/kvm_host.h>
 #include <asm/sbi.h>
 #include <asm/kvm_vcpu_sbi.h>
+#include "tvm/tvm-sbi.h"
 
 #ifndef CONFIG_RISCV_SBI_V01
 static const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_v01 = {
@@ -371,6 +372,27 @@ int kvm_riscv_vcpu_sbi_ecall(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		.utrap = &utrap,
 	};
 	bool ext_is_v01 = false;
+
+	if (vcpu->kvm->is_cvm && cp->a7 == TVM_SBI_EXT_ID) {
+		switch (cp->a6) {
+		case SBI_SM_REGISTER_SHARED_MEM_WITH_REE:
+			ret = tvm_register_shared_mem(vcpu, cp->a0, cp->a1);
+			break;
+		case SBI_SM_FREE_SHARED_MEM_WITH_REE:
+			ret = tvm_unregister_shared_mem(vcpu, cp->a0, cp->a1);
+			break;
+		default:
+			cp->a0 = SBI_ERR_NOT_SUPPORTED;
+			cp->a1 = 0;
+			cp->sepc += 4;
+			return 1;
+		}
+
+		cp->a0 = ret < 0 ? SBI_ERR_FAILURE : 0;
+		cp->a1 = 0;
+		cp->sepc += 4;
+		return 1;
+	}
 
 	sbi_ext = kvm_vcpu_sbi_find_ext(vcpu, cp->a7);
 	if (sbi_ext && sbi_ext->handler) {

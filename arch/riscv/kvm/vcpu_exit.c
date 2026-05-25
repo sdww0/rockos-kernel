@@ -9,6 +9,7 @@
 #include <linux/kvm_host.h>
 #include <asm/csr.h>
 #include <asm/insn-def.h>
+#include "tvm/tvm-sbi.h"
 
 static int gstage_page_fault(struct kvm_vcpu *vcpu, struct kvm_run *run,
 			     struct kvm_cpu_trap *trap)
@@ -41,7 +42,8 @@ static int gstage_page_fault(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	}
 
 	ret = kvm_riscv_gstage_map(vcpu, memslot, fault_addr, hva,
-		(trap->scause == EXC_STORE_GUEST_PAGE_FAULT) ? true : false);
+		(trap->scause == EXC_STORE_GUEST_PAGE_FAULT) ? true : false,
+		vcpu->kvm->is_cvm);
 	if (ret < 0)
 		return ret;
 
@@ -165,6 +167,57 @@ void kvm_riscv_vcpu_trap_redirect(struct kvm_vcpu *vcpu,
 	vcpu->arch.guest_context.sstatus |= SR_SPP;
 }
 
+int tvm_register_shared_mem(struct kvm_vcpu *vcpu, unsigned long addr,
+			    unsigned long nr_pages)
+{
+	struct kvm_memory_slot *memslot;
+	unsigned long hva, fault_addr;
+	bool writeable;
+	gfn_t gfn;
+	int ret;
+
+	if (!nr_pages)
+		return 1;
+
+	if (addr & ~PAGE_MASK)
+		return -EINVAL;
+
+	/*
+	 * Shared-memory requests are surfaced through the Zion SBI channel.
+	 * Register each page with the SM so it can relax the corresponding
+	 * secure mapping while ordinary private memory remains protected.
+	 */
+	for (unsigned long i = 0; i < nr_pages; i++) {
+		fault_addr = addr + i * PAGE_SIZE;
+		gfn = fault_addr >> PAGE_SHIFT;
+		memslot = gfn_to_memslot(vcpu->kvm, gfn);
+		hva = gfn_to_hva_memslot_prot(memslot, gfn, &writeable);
+		if (kvm_is_error_hva(hva))
+			return -EFAULT;
+
+		ret = kvm_riscv_gstage_map(vcpu, memslot, fault_addr, hva, true,
+					   true);
+		if (ret < 0) {
+			kvm_err("tvm_alloc_shared_mem failed: addr=0x%lx num=0x%lx ret=%d\n",
+				addr, nr_pages, ret);
+			return ret;
+		}
+	}
+
+	return 1;
+}
+
+int tvm_unregister_shared_mem(struct kvm_vcpu *vcpu, unsigned long addr,
+			      unsigned long nr_pages)
+{
+	(void)vcpu;
+	(void)addr;
+	(void)nr_pages;
+
+	/* TODO: unregister the shared mapping from the SM when supported. */
+	return 1;
+}
+
 /*
  * Return > 0 to return to guest, < 0 on error, 0 (and set exit_reason) on
  * proper exit to userspace.
@@ -201,8 +254,22 @@ int kvm_riscv_vcpu_exit(struct kvm_vcpu *vcpu, struct kvm_run *run,
 			ret = gstage_page_fault(vcpu, run, trap);
 		break;
 	case EXC_SUPERVISOR_SYSCALL:
-		if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV)
-			ret = kvm_riscv_vcpu_sbi_ecall(vcpu, run);
+		if (vcpu->kvm->is_cvm) {
+			if (trap->stval >= FREE_SHARED_MEM_BASE && trap->htval != 0) {
+				ret = tvm_unregister_shared_mem(vcpu, trap->stval,
+								trap->htval);
+			} else if (trap->stval >= 0 && trap->htval != 0) {
+				ret = tvm_register_shared_mem(vcpu, trap->stval,
+							      trap->htval);
+			} else if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV) {
+				ret = kvm_riscv_vcpu_sbi_ecall(vcpu, run);
+			} else {
+				kvm_err("unexpected CVM supervisor syscall exit\n");
+			}
+		} else {
+			if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV)
+				ret = kvm_riscv_vcpu_sbi_ecall(vcpu, run);
+		}
 		break;
 	default:
 		break;

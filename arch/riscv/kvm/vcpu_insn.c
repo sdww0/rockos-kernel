@@ -457,31 +457,41 @@ int kvm_riscv_vcpu_mmio_load(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	u8 data_buf[8];
 	unsigned long insn;
 	int shift = 0, len = 0, insn_len = 0;
-	struct kvm_cpu_trap utrap = { 0 };
-	struct kvm_cpu_context *ct = &vcpu->arch.guest_context;
-
-	/* Determine trapped instruction */
-	if (htinst & 0x1) {
+	if (vcpu->kvm->is_cvm) {
 		/*
-		 * Bit[0] == 1 implies trapped instruction value is
-		 * transformed instruction or custom instruction.
+		 * CVM faults come from M-mode. The SM already fetched the
+		 * trapping instruction because the host must not HLVX from
+		 * private guest memory after PMP protection is active.
 		 */
-		insn = htinst | INSN_16BIT_MASK;
-		insn_len = (htinst & BIT(1)) ? INSN_LEN(insn) : 2;
+		insn = vcpu->extra_trap.htinst;
+		insn_len = vcpu->extra_trap.htinst_len;
 	} else {
-		/*
-		 * Bit[0] == 0 implies trapped instruction value is
-		 * zero or special value.
-		 */
-		insn = kvm_riscv_vcpu_unpriv_read(vcpu, true, ct->sepc,
-						  &utrap);
-		if (utrap.scause) {
-			/* Redirect trap if we failed to read instruction */
-			utrap.sepc = ct->sepc;
-			kvm_riscv_vcpu_trap_redirect(vcpu, &utrap);
-			return 1;
+		struct kvm_cpu_trap utrap = { 0 };
+		struct kvm_cpu_context *ct = &vcpu->arch.guest_context;
+
+		/* Determine trapped instruction */
+		if (htinst & 0x1) {
+			/*
+			 * Bit[0] == 1 implies trapped instruction value is
+			 * transformed instruction or custom instruction.
+			 */
+			insn = htinst | INSN_16BIT_MASK;
+			insn_len = (htinst & BIT(1)) ? INSN_LEN(insn) : 2;
+		} else {
+			/*
+			 * Bit[0] == 0 implies trapped instruction value is
+			 * zero or special value.
+			 */
+			insn = kvm_riscv_vcpu_unpriv_read(vcpu, true, ct->sepc,
+							&utrap);
+			if (utrap.scause) {
+				/* Redirect trap if we failed to read instruction */
+				utrap.sepc = ct->sepc;
+				kvm_riscv_vcpu_trap_redirect(vcpu, &utrap);
+				return 1;
+			}
+			insn_len = INSN_LEN(insn);
 		}
-		insn_len = INSN_LEN(insn);
 	}
 
 	/* Decode length of MMIO and shift */
@@ -583,33 +593,41 @@ int kvm_riscv_vcpu_mmio_store(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	ulong data;
 	unsigned long insn;
 	int len = 0, insn_len = 0;
-	struct kvm_cpu_trap utrap = { 0 };
-	struct kvm_cpu_context *ct = &vcpu->arch.guest_context;
-
-	/* Determine trapped instruction */
-	if (htinst & 0x1) {
+	if (vcpu->kvm->is_cvm) {
 		/*
-		 * Bit[0] == 1 implies trapped instruction value is
-		 * transformed instruction or custom instruction.
+		 * See the load path above: SM supplies the trapped instruction
+		 * so the host does not fetch from protected guest memory.
 		 */
-		insn = htinst | INSN_16BIT_MASK;
-		insn_len = (htinst & BIT(1)) ? INSN_LEN(insn) : 2;
+		insn = vcpu->extra_trap.htinst;
+		insn_len = vcpu->extra_trap.htinst_len;
 	} else {
-		/*
-		 * Bit[0] == 0 implies trapped instruction value is
-		 * zero or special value.
-		 */
-		insn = kvm_riscv_vcpu_unpriv_read(vcpu, true, ct->sepc,
-						  &utrap);
-		if (utrap.scause) {
-			/* Redirect trap if we failed to read instruction */
-			utrap.sepc = ct->sepc;
-			kvm_riscv_vcpu_trap_redirect(vcpu, &utrap);
-			return 1;
-		}
-		insn_len = INSN_LEN(insn);
-	}
+		struct kvm_cpu_trap utrap = { 0 };
+		struct kvm_cpu_context *ct = &vcpu->arch.guest_context;
 
+		/* Determine trapped instruction */
+		if (htinst & 0x1) {
+			/*
+			 * Bit[0] == 1 implies trapped instruction value is
+			 * transformed instruction or custom instruction.
+			 */
+			insn = htinst | INSN_16BIT_MASK;
+			insn_len = (htinst & BIT(1)) ? INSN_LEN(insn) : 2;
+		} else {
+			/*
+			 * Bit[0] == 0 implies trapped instruction value is
+			 * zero or special value.
+			 */
+			insn = kvm_riscv_vcpu_unpriv_read(vcpu, true, ct->sepc,
+							&utrap);
+			if (utrap.scause) {
+				/* Redirect trap if we failed to read instruction */
+				utrap.sepc = ct->sepc;
+				kvm_riscv_vcpu_trap_redirect(vcpu, &utrap);
+				return 1;
+			}
+			insn_len = INSN_LEN(insn);
+		}
+	}
 	data = GET_RS2(insn, &vcpu->arch.guest_context);
 	data8 = data16 = data32 = data64 = data;
 

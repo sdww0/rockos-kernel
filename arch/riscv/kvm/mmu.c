@@ -18,6 +18,8 @@
 #include <asm/csr.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <asm/sbi.h>
+#include "tvm/tvm-sbi.h"
 
 #ifdef CONFIG_64BIT
 static unsigned long gstage_mode __ro_after_init = (HGATP_MODE_SV39X4 << HGATP_MODE_SHIFT);
@@ -608,7 +610,7 @@ bool kvm_test_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 
 int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 			 struct kvm_memory_slot *memslot,
-			 gpa_t gpa, unsigned long hva, bool is_write)
+			 gpa_t gpa, unsigned long hva, bool is_write, bool is_tvm)
 {
 	int ret;
 	kvm_pfn_t hfn;
@@ -621,6 +623,9 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 	bool logging = (memslot->dirty_bitmap &&
 			!(memslot->flags & KVM_MEM_READONLY)) ? true : false;
 	unsigned long vma_pagesize, mmu_seq;
+	struct tvm_sbi_register_pt pt = { 0 };
+	struct sbiret sret;
+	bool pt_is_huge = false;
 
 	/* We need minimum second+third level pages */
 	ret = kvm_mmu_topup_memory_cache(pcache, gstage_pgd_levels);
@@ -668,6 +673,7 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 	}
 
 	hfn = gfn_to_pfn_prot(kvm, gfn, is_write, &writable);
+
 	if (hfn == KVM_PFN_ERR_HWPOISON) {
 		send_sig_mceerr(BUS_MCEERR_AR, (void __user *)hva,
 				vma_pageshift, current);
@@ -682,6 +688,41 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 	 */
 	if (logging && !is_write)
 		writable = false;
+
+	if (is_tvm) {
+		/*
+		 * TVM page tables are owned by the security monitor. Register
+		 * the resolved host frame there instead of installing a normal
+		 * host-managed G-stage PTE.
+		 */
+		if (vma_pagesize == PMD_SIZE)
+			pt_is_huge = true;
+
+		pt.gpa = (unsigned long)gpa;
+		pt.hfn = (unsigned long)hfn;
+		pt.level = kvm_riscv_gstage_mode();
+		pt.is_huge = pt_is_huge;
+		pt.rdonly = !writable;
+
+		sret = sbi_tvm_register_pt(kvm->cvm_id, &pt);
+		if (sret.error) {
+			kvm_err("Failed to register TVM mapping: gpa=0x%llx hfn=0x%llx huge=%u rdonly=%u err=%ld\n",
+				(unsigned long long)pt.gpa,
+				(unsigned long long)pt.hfn,
+				pt.is_huge, pt.rdonly, sret.error);
+			ret = -EFAULT;
+		} else {
+			if (writable && is_write) {
+				kvm_set_pfn_dirty(hfn);
+				mark_page_dirty(kvm, gfn);
+			}
+			ret = 0;
+		}
+
+		kvm_set_pfn_accessed(hfn);
+		kvm_release_pfn_clean(hfn);
+		return ret;
+	}
 
 	spin_lock(&kvm->mmu_lock);
 

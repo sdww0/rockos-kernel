@@ -12,6 +12,7 @@
 #include <linux/err.h>
 #include <linux/kdebug.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/percpu.h>
 #include <linux/vmalloc.h>
 #include <linux/sched/signal.h>
@@ -41,6 +42,14 @@ const struct kvm_stats_header kvm_vcpu_stats_header = {
 	.data_offset = sizeof(struct kvm_stats_header) + KVM_STATS_NAME_SIZE +
 		       sizeof(kvm_vcpu_stats_desc),
 };
+
+static bool kvm_riscv_has_henvcfg(void)
+{
+	if (!IS_ENABLED(CONFIG_ARCH_ESWIN_EIC770X_SOC_FAMILY))
+		return true;
+
+	return of_machine_is_compatible("riscv-virtio");
+}
 
 static void kvm_riscv_reset_vcpu(struct kvm_vcpu *vcpu)
 {
@@ -509,28 +518,42 @@ static void kvm_riscv_vcpu_update_config(const unsigned long *isa)
 	if (riscv_isa_extension_available(isa, ZICBOZ))
 		henvcfg |= ENVCFG_CBZE;
 
-#ifndef CONFIG_ARCH_ESWIN_EIC770X_SOC_FAMILY
-	csr_write(CSR_HENVCFG, henvcfg);
-#endif
+	if (kvm_riscv_has_henvcfg()) {
+		/*
+		 * QEMU virt currently reuses the ESWIN-flavoured kernel config,
+		 * but still provides HENVCFG. Keep CBZE there while avoiding the
+		 * CSR on real Eswin chips that do not implement it.
+		 */
+		csr_write(CSR_HENVCFG, henvcfg);
 
 #ifdef CONFIG_32BIT
-	csr_write(CSR_HENVCFGH, henvcfg >> 32);
+		csr_write(CSR_HENVCFGH, henvcfg >> 32);
 #endif
+	}
 }
 
 void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
 	struct kvm_vcpu_csr *csr = &vcpu->arch.guest_csr;
 
-	csr_write(CSR_VSSTATUS, csr->vsstatus);
-	csr_write(CSR_VSIE, csr->vsie);
-	csr_write(CSR_VSTVEC, csr->vstvec);
-	csr_write(CSR_VSSCRATCH, csr->vsscratch);
-	csr_write(CSR_VSEPC, csr->vsepc);
-	csr_write(CSR_VSCAUSE, csr->vscause);
-	csr_write(CSR_VSTVAL, csr->vstval);
-	csr_write(CSR_HVIP, csr->hvip);
-	csr_write(CSR_VSATP, csr->vsatp);
+	if (vcpu->kvm->is_cvm) {
+		/*
+		 * Secure vCPUs keep their VS CSR image in the SM shared-memory
+		 * channel. Restoring the normal KVM copy here can overwrite the
+		 * state prepared by OpenSBI before the next secure entry.
+		 */
+		csr_write(CSR_HVIP, csr->hvip);
+	} else {
+		csr_write(CSR_VSSTATUS, csr->vsstatus);
+		csr_write(CSR_VSIE, csr->vsie);
+		csr_write(CSR_VSTVEC, csr->vstvec);
+		csr_write(CSR_VSSCRATCH, csr->vsscratch);
+		csr_write(CSR_VSEPC, csr->vsepc);
+		csr_write(CSR_VSCAUSE, csr->vscause);
+		csr_write(CSR_VSTVAL, csr->vstval);
+		csr_write(CSR_HVIP, csr->hvip);
+		csr_write(CSR_VSATP, csr->vsatp);
+	}
 
 	kvm_riscv_vcpu_update_config(vcpu->arch.isa);
 
@@ -567,15 +590,24 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 					 vcpu->arch.isa);
 	kvm_riscv_vcpu_host_vector_restore(&vcpu->arch.host_context);
 
-	csr->vsstatus = csr_read(CSR_VSSTATUS);
-	csr->vsie = csr_read(CSR_VSIE);
-	csr->vstvec = csr_read(CSR_VSTVEC);
-	csr->vsscratch = csr_read(CSR_VSSCRATCH);
-	csr->vsepc = csr_read(CSR_VSEPC);
-	csr->vscause = csr_read(CSR_VSCAUSE);
-	csr->vstval = csr_read(CSR_VSTVAL);
-	csr->hvip = csr_read(CSR_HVIP);
-	csr->vsatp = csr_read(CSR_VSATP);
+	if (vcpu->kvm->is_cvm) {
+		/*
+		 * SM has already copied the secure VS CSR state back through
+		 * the shared channel. Keep only HVIP in host KVM, because host
+		 * interrupt injection still owns that CSR.
+		 */
+		csr->hvip = csr_read(CSR_HVIP);
+	} else {
+		csr->vsstatus = csr_read(CSR_VSSTATUS);
+		csr->vsie = csr_read(CSR_VSIE);
+		csr->vstvec = csr_read(CSR_VSTVEC);
+		csr->vsscratch = csr_read(CSR_VSSCRATCH);
+		csr->vsepc = csr_read(CSR_VSEPC);
+		csr->vscause = csr_read(CSR_VSCAUSE);
+		csr->vstval = csr_read(CSR_VSTVAL);
+		csr->hvip = csr_read(CSR_HVIP);
+		csr->vsatp = csr_read(CSR_VSATP);
+	}
 }
 
 static void kvm_riscv_check_vcpu_requests(struct kvm_vcpu *vcpu)
@@ -641,7 +673,16 @@ static void kvm_riscv_update_hvip(struct kvm_vcpu *vcpu)
 static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 {
 	guest_state_enter_irqoff();
-	__kvm_riscv_switch_to(&vcpu->arch);
+	if (vcpu->kvm->is_cvm) {
+		/*
+		 * CVMs enter through the security monitor rather than the
+		 * normal KVM assembly switch so OpenSBI can install PMP and
+		 * secure context state around the nested guest.
+		 */
+		sbi_tvm_vcpu_enter(vcpu->kvm->cvm_id, vcpu->vcpu_id);
+	} else {
+		__kvm_riscv_switch_to(&vcpu->arch);
+	}
 	vcpu->arch.last_exit_cpu = vcpu->cpu;
 	guest_state_exit_irqoff();
 }

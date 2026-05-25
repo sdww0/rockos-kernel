@@ -56,6 +56,7 @@ scm_version()
 	local short=false
 	local no_dirty=false
 	local tag
+	return
 
 	while [ $# -gt 0 ];
 	do

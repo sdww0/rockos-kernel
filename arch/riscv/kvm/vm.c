@@ -11,6 +11,8 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/kvm_host.h>
+#include <asm/sbi.h>
+#include "tvm/tvm-sbi.h"
 
 const struct _kvm_stats_desc kvm_vm_stats_desc[] = {
 	KVM_GENERIC_VM_STATS()
@@ -30,10 +32,22 @@ const struct kvm_stats_header kvm_vm_stats_header = {
 int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 {
 	int r;
+	struct sbiret ret;
 
 	r = kvm_riscv_gstage_alloc_pgd(kvm);
 	if (r)
 		return r;
+
+	if (type == 1) {
+		/*
+		 * KVM type 1 is the Zion TVM path. Allocate the secure VM in
+		 * OpenSBI first so later vCPU and memory setup can refer to the
+		 * SM-owned CVM id.
+		 */
+		kvm->is_cvm = true;
+		ret = sbi_tvm_init();
+		kvm->cvm_id = (unsigned int)ret.value;
+	}
 
 	r = kvm_riscv_gstage_vmid_init(kvm);
 	if (r) {
