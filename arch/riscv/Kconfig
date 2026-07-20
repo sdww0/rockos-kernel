@@ -339,9 +339,18 @@ config ARCH_RV64I
 	bool "RV64I"
 	select 64BIT
 	select ARCH_SUPPORTS_INT128 if CC_HAS_INT128
-	select SWIOTLB if MMU
+	select SWIOTLB if MMU && !ARCH_ESWIN_EIC770X_SOC_FAMILY
 
 endchoice
+
+config ZION_CVM_GUEST
+	bool "Zion confidential VM guest support"
+	depends on 64BIT && MMU
+	select SWIOTLB
+	help
+	  Enable the guest-side DMA sharing path used by Zion confidential VMs.
+	  This forces virtio DMA through SWIOTLB bounce buffers and registers
+	  the corresponding pages with the Zion security monitor.
 
 # We must be able to map all physical memory into the kernel, but the compiler
 # is still a bit more efficient when generating code if it's setup in a manner

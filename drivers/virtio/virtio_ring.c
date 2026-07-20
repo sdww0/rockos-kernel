@@ -15,6 +15,7 @@
 #include <linux/mm.h>
 #include <linux/spinlock.h>
 #include <tvm/tvm-sbi.h>
+#include <xen/xen.h>
 
 #ifdef DEBUG
 /* For development, we want to crash whenever the ring is screwed. */
@@ -280,11 +281,10 @@ static bool virtqueue_use_indirect(const struct vring_virtqueue *vq,
 
 static bool vring_use_dma_api(const struct virtio_device *vdev)
 {
-	/*
-	 * Zion CVMs expose virtio buffers through shared SWIOTLB bounce pages.
-	 * Bypassing the DMA API would put private guest PFNs in the vring.
-	 */
-	return true;
+	if (IS_ENABLED(CONFIG_ZION_CVM_GUEST))
+		return true;
+
+	return xen_domain();
 }
 
 size_t virtio_max_dma_size(const struct virtio_device *vdev)
@@ -337,6 +337,9 @@ static int zion_register_vring_shared(struct virtio_device *vdev,
 {
 	unsigned long start, nr_pages;
 	long ret;
+
+	if (!IS_ENABLED(CONFIG_ZION_CVM_GUEST))
+		return 0;
 
 	if (!size)
 		return 0;

@@ -304,6 +304,9 @@ static void zion_register_io_tlb_pool(struct io_tlb_pool *mem)
 	unsigned long nr_pages;
 	long ret;
 
+	if (!IS_ENABLED(CONFIG_ZION_CVM_GUEST))
+		return;
+
 	if (!mem->nslabs)
 		return;
 
