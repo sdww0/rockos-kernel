@@ -46,6 +46,10 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 		 */
 		kvm->is_cvm = true;
 		ret = sbi_tvm_init();
+		if (ret.error) {
+			kvm_riscv_gstage_free_pgd(kvm);
+			return sbi_err_map_linux_errno(ret.error);
+		}
 		kvm->cvm_id = (unsigned int)ret.value;
 	}
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __TVM_SBI__
 #define __TVM_SBI__
 #include <linux/dma-mapping.h>
@@ -32,9 +33,8 @@ struct cvm_load_page_para {
 struct cvm_load_mem_para {
 	unsigned long stash;
 	unsigned long pos;
-    unsigned long size;
+	unsigned long size;
 };
-
 
 // struct tvm_sbi_set_shared_mem {
 //     unsigned long addr;
@@ -59,8 +59,7 @@ struct tvm_mem_block {
 	unsigned int flags;
 	unsigned long guest_phys_addr;
 	unsigned long memory_size; /* bytes */
-	unsigned long
-		userspace_addr; /* start of the userspace allocated memory */
+	unsigned long userspace_addr; /* start of the userspace allocated memory */
 	unsigned int private; //[obsolete]
 };
 
@@ -106,9 +105,6 @@ struct tvm_cpu_context {
 	//union __riscv_fp_state fp;
 };
 
-typedef uintptr_t vaddr_t;
-typedef uintptr_t paddr_t;
-
 #define RISCV_SHARED_RAM 0x400000000000000ULL
 #define FREE_SHARED_MEM_BASE 0x400000000000000ULL
 
@@ -139,7 +135,6 @@ typedef uintptr_t paddr_t;
 #define SBI_SM_FREE_SHARED_MEM_WITH_REE 1031
 #define SBI_SM_SYNC_PT 1034
 
-
 struct sbiret sbi_tvm_init(void);
 
 struct sbiret sbi_tvm_vcpu_init(unsigned int cvm_id,
@@ -160,9 +155,9 @@ struct sbiret sbi_tvm_register_pt(unsigned int cvm_id,
 				  struct tvm_sbi_register_pt *pt);
 
 struct sbiret sbi_tvm_sync_pt(unsigned int cvm_id,
-					unsigned long gpa, unsigned long pt_paddr);
+			      unsigned long gpa, unsigned long pt_paddr);
 
-struct sbiret sbi_tvm_destory(unsigned int cvm_id);
+struct sbiret sbi_tvm_destroy(unsigned int cvm_id);
 
 int tvm_remap_pfn(struct vm_area_struct *vma, unsigned long addr,
 		  unsigned long pfn, unsigned long size, pgprot_t prot);

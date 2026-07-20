@@ -199,6 +199,9 @@ struct kvm_vcpu_arch {
 	/* CPU CSR context upon Guest VCPU reset */
 	struct kvm_vcpu_csr guest_reset_csr;
 
+	/* Security monitor vCPU id for Zion CVMs. */
+	unsigned int cvm_vcpu_id;
+
 	/*
 	 * VCPU interrupts
 	 *

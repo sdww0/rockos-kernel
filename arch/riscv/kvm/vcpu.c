@@ -679,7 +679,7 @@ static void noinstr kvm_riscv_vcpu_enter_exit(struct kvm_vcpu *vcpu)
 		 * normal KVM assembly switch so OpenSBI can install PMP and
 		 * secure context state around the nested guest.
 		 */
-		sbi_tvm_vcpu_enter(vcpu->kvm->cvm_id, vcpu->vcpu_id);
+		sbi_tvm_vcpu_enter(vcpu->kvm->cvm_id, vcpu->arch.cvm_vcpu_id);
 	} else {
 		__kvm_riscv_switch_to(&vcpu->arch);
 	}

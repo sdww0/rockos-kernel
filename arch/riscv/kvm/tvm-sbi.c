@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <asm/sbi.h>
 #include "tvm/tvm-sbi.h"
 
-struct sbiret sbi_tvm_init()
+struct sbiret sbi_tvm_init(void)
 {
 	return sbi_ecall(TVM_SBI_EXT_ID, SBI_SM_CREATE_CVM, 0, 0, 0, 0, 0, 0);
 }
@@ -47,7 +48,7 @@ struct sbiret sbi_tvm_register_pt(unsigned int cvm_id,
 			 (unsigned long)pt, 0, 0, 0, 0);
 }
 
-struct sbiret sbi_tvm_destory(unsigned int cvm_id)
+struct sbiret sbi_tvm_destroy(unsigned int cvm_id)
 {
 	return sbi_ecall(TVM_SBI_EXT_ID, SBI_SM_DESTROY_CVM, cvm_id, 0, 0, 0, 0, 0);
 }

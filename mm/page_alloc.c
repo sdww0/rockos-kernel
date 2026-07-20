@@ -4423,10 +4423,8 @@ struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
 	 * There are several places where we assume that the order value is sane
 	 * so bail out early if the request is out of bound.
 	 */
-	if (WARN_ON_ONCE_GFP(order > MAX_ORDER, gfp)){
-		printk(KERN_ERR "Bad order:%u for gfp:0x%x\n", order, gfp);
+	if (WARN_ON_ONCE_GFP(order > MAX_ORDER, gfp))
 		return NULL;
-	}
 
 	gfp &= gfp_allowed_mask;
 	/*

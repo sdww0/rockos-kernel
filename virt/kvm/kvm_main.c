@@ -1307,7 +1307,7 @@ static void kvm_destroy_vm(struct kvm *kvm)
 	struct mm_struct *mm = kvm->mm;
 
 	if (kvm->is_cvm)
-		sbi_tvm_destory(kvm->cvm_id);
+		sbi_tvm_destroy(kvm->cvm_id);
 
 	kvm_destroy_pm_notifier(kvm);
 	kvm_uevent_notify_change(KVM_EVENT_DESTROY_VM, kvm);
@@ -3994,12 +3994,19 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 		goto vcpu_free_run_page;
 
 	if (kvm->is_cvm) {
-		shared_mem.guest_context = (uintptr_t)virt_to_phys(&vcpu->arch.guest_context);
-		shared_mem.guest_csr = (uintptr_t)virt_to_phys(&vcpu->arch.guest_csr);
-		shared_mem.extra_trap = (uintptr_t)virt_to_phys(&vcpu->extra_trap);
+		shared_mem.guest_context =
+			(uintptr_t)virt_to_phys(&vcpu->arch.guest_context);
+		shared_mem.guest_csr =
+			(uintptr_t)virt_to_phys(&vcpu->arch.guest_csr);
+		shared_mem.extra_trap =
+			(uintptr_t)virt_to_phys(&vcpu->extra_trap);
 
 		ret = sbi_tvm_vcpu_init(kvm->cvm_id, &shared_mem);
-		vcpu->vcpu_id = (unsigned int)ret.value;
+		if (ret.error) {
+			r = sbi_err_map_linux_errno(ret.error);
+			goto arch_vcpu_destroy;
+		}
+		vcpu->arch.cvm_vcpu_id = (unsigned int)ret.value;
 	}
 
 	if (kvm->dirty_ring_size) {
@@ -4808,16 +4815,31 @@ static int kvm_vm_ioctl_get_stats_fd(struct kvm *kvm)
 
 static int tvm_vm_ioctl_load_page(struct kvm *kvm, struct cvm_load_page_para *p)
 {
-	sbi_tvm_load_page(kvm->cvm_id, p);
+	struct sbiret ret;
+
+	if (!kvm->is_cvm)
+		return -EINVAL;
+
+	ret = sbi_tvm_load_page(kvm->cvm_id, p);
+	if (ret.error)
+		return sbi_err_map_linux_errno(ret.error);
+
 	return 0;
 }
 
 static int tvm_vm_ioctl_load_mem(struct kvm *kvm, struct cvm_load_mem_para *mem_para)
 {
-	sbi_cvm_load_mem(kvm->cvm_id, mem_para);
+	struct sbiret ret;
+
+	if (!kvm->is_cvm)
+		return -EINVAL;
+
+	ret = sbi_cvm_load_mem(kvm->cvm_id, mem_para);
+	if (ret.error)
+		return sbi_err_map_linux_errno(ret.error);
+
 	return 0;
 }
-
 
 static long kvm_vm_ioctl(struct file *filp,
 			   unsigned int ioctl, unsigned long arg)
@@ -4829,21 +4851,24 @@ static long kvm_vm_ioctl(struct file *filp,
 	if (kvm->mm != current->mm || kvm->vm_dead)
 		return -EIO;
 	switch (ioctl) {
-	case TVM_LOAD_KERNEL_PAGE:
+	case TVM_LOAD_KERNEL_PAGE: {
 		struct cvm_load_page_para p;
+
 		r = -EFAULT;
 		if (copy_from_user(&p, argp, sizeof(p)))
 			goto out;
-		//r = sbi_tvm_load_page(kvm->cvm_id, &p);
 		r = tvm_vm_ioctl_load_page(kvm, &p);
 		break;
-	case CVM_LOAD_MEM:
+	}
+	case CVM_LOAD_MEM: {
 		struct cvm_load_mem_para mem_para;
+
 		r = -EFAULT;
 		if (copy_from_user(&mem_para, argp, sizeof(mem_para)))
 			goto out;
 		r = tvm_vm_ioctl_load_mem(kvm, &mem_para);
 		break;
+	}
 	case KVM_CREATE_VCPU:
 		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
 		break;
@@ -4867,13 +4892,19 @@ static long kvm_vm_ioctl(struct file *filp,
 
 		if (kvm->is_cvm) {
 			if (kvm_userspace_mem.guest_phys_addr == 0x80000000) {
+				struct sbiret ret;
+
 				mem_block.slot = kvm_userspace_mem.slot;
 				mem_block.flags = kvm_userspace_mem.flags;
 				mem_block.guest_phys_addr = kvm_userspace_mem.guest_phys_addr;
 				mem_block.memory_size = kvm_userspace_mem.memory_size;
 				mem_block.userspace_addr = kvm_userspace_mem.userspace_addr;
 				mem_block.private = 0;
-				sbi_tvm_set_mem_block(kvm->cvm_id, &mem_block);
+				ret = sbi_tvm_set_mem_block(kvm->cvm_id, &mem_block);
+				if (ret.error) {
+					r = sbi_err_map_linux_errno(ret.error);
+					goto out;
+				}
 			}
 		}
 
