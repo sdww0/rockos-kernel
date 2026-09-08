@@ -695,12 +695,20 @@ int kvm_riscv_gstage_map(struct kvm_vcpu *vcpu,
 		 * the resolved host frame there instead of installing a normal
 		 * host-managed G-stage PTE.
 		 */
-		if (vma_pagesize == PMD_SIZE)
+		if (vma_pagesize == PAGE_SIZE)
+			pt.level = 0;
+		else if (vma_pagesize == PMD_SIZE) {
+			pt.level = 1;
 			pt_is_huge = true;
+		} else if (vma_pagesize == PUD_SIZE)
+			pt.level = 2;
+		else {
+			kvm_release_pfn_clean(hfn);
+			return -EFAULT;
+		}
 
 		pt.gpa = (unsigned long)gpa;
 		pt.hfn = (unsigned long)hfn;
-		pt.level = kvm_riscv_gstage_mode();
 		pt.is_huge = pt_is_huge;
 		pt.rdonly = !writable;
 
