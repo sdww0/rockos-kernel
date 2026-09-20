@@ -9,9 +9,29 @@
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/kvm_host.h>
+#include <linux/module.h>
 #include <asm/sbi.h>
 #include <asm/kvm_vcpu_sbi.h>
 #include "tvm/tvm-sbi.h"
+
+/* Explicit bring-up fault injection; ordinary CVMs never enable this. */
+static unsigned int zion_vcpu_tamper;
+module_param(zion_vcpu_tamper, uint, 0600);
+MODULE_PARM_DESC(zion_vcpu_tamper,
+		"Write 1 to inject one S3 shared-channel modification on a CVM SBI exit");
+
+static void zion_test_tamper_vcpu(struct kvm_vcpu *vcpu)
+{
+	if (!vcpu->kvm->is_cvm ||
+	    cmpxchg(&zion_vcpu_tamper, 1, 0) != 1)
+		return;
+
+	/* After an SBI exit S3 is neither an argument nor an MMIO operand.
+	 * Alter only the Host channel, never the monitor's private context. */
+	WRITE_ONCE(vcpu->arch.guest_context.s3, 0x5a494f4eUL);
+	pr_warn("[ZION HOST TEST] controlled-tamper cvm=%u vcpu=%u register=S3 value=0x5a494f4e; one-shot injection consumed\n",
+		vcpu->kvm->cvm_id, vcpu->arch.cvm_vcpu_id);
+}
 
 #ifndef CONFIG_RISCV_SBI_V01
 static const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_v01 = {
@@ -372,6 +392,8 @@ int kvm_riscv_vcpu_sbi_ecall(struct kvm_vcpu *vcpu, struct kvm_run *run)
 		.utrap = &utrap,
 	};
 	bool ext_is_v01 = false;
+
+	zion_test_tamper_vcpu(vcpu);
 
 	if (vcpu->kvm->is_cvm && cp->a7 == TVM_SBI_EXT_ID) {
 		switch (cp->a6) {
